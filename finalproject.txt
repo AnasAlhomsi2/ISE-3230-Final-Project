@@ -1,0 +1,62 @@
+import numpy as np
+
+def generate_random_ship_placement(board_size, ship_sizes):
+    board = np.zeros((board_size, board_size), dtype=int)
+    
+    for ship_size in ship_sizes:
+        placed = False
+        while not placed:
+            # Randomly choose orientation: 0 = horizontal, 1 = vertical
+            orientation = np.random.choice([0, 1])
+            if orientation == 0:  # Horizontal
+                row = np.random.randint(0, board_size)
+                col = np.random.randint(0, board_size - ship_size + 1)
+                if np.sum(board[row, col:col + ship_size]) == 0:  # Check if space is free
+                    board[row, col:col + ship_size] = 1
+                    placed = True
+            else:  # Vertical
+                row = np.random.randint(0, board_size - ship_size + 1)
+                col = np.random.randint(0, board_size)
+                if np.sum(board[row:row + ship_size, col]) == 0:  # Check if space is free
+                    board[row:row + ship_size, col] = 1
+                    placed = True
+    return board
+
+def checkerboard_guessing(board):
+    board_size = board.shape[0]
+    guesses = 0
+    hits = 0
+    total_ship_cells = np.sum(board)
+    
+    # Checkerboard pattern: Guess cells where (i + j) % 2 == 0
+    for i in range(board_size):
+        for j in range(board_size):
+            if (i + j) % 2 == 0:  # Black cells
+                guesses += 1
+                if board[i, j] == 1:  # Hit
+                    hits += 1
+                    if hits == total_ship_cells:
+                        return guesses
+
+    # After checkerboard cells, guess the remaining white cells
+    for i in range(board_size):
+        for j in range(board_size):
+            if (i + j) % 2 != 0:  # White cells
+                guesses += 1
+                if board[i, j] == 1:  # Hit
+                    hits += 1
+                    if hits == total_ship_cells:
+                        return guesses
+    return guesses
+
+board_size = 10
+ship_sizes = [5, 4, 3, 3, 2]  # Battleship sizes
+
+# Random placement and checkerboard guessing
+random_ship_placement = generate_random_ship_placement(board_size, ship_sizes)
+total_guesses = checkerboard_guessing(random_ship_placement)
+
+# Show results
+print("Random Ship Placement:")
+print(random_ship_placement)
+print(f"Total Guesses Required: {total_guesses}")
