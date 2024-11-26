@@ -1,62 +1,131 @@
 import numpy as np
+import gurobipy as gp
+from gurobipy import GRB
 
-def generate_random_ship_placement(board_size, ship_sizes):
-    board = np.zeros((board_size, board_size), dtype=int)
-    
-    for ship_size in ship_sizes:
-        placed = False
-        while not placed:
-            # Randomly choose orientation: 0 = horizontal, 1 = vertical
-            orientation = np.random.choice([0, 1])
-            if orientation == 0:  # Horizontal
-                row = np.random.randint(0, board_size)
-                col = np.random.randint(0, board_size - ship_size + 1)
-                if np.sum(board[row, col:col + ship_size]) == 0:  # Check if space is free
-                    board[row, col:col + ship_size] = 1
-                    placed = True
-            else:  # Vertical
-                row = np.random.randint(0, board_size - ship_size + 1)
-                col = np.random.randint(0, board_size)
-                if np.sum(board[row:row + ship_size, col]) == 0:  # Check if space is free
-                    board[row:row + ship_size, col] = 1
-                    placed = True
-    return board
+def generate_ship_placement_gurobi(board_size, ship_sizes):
+    """
+    Generate ship placement using Gurobi optimization.
 
-def checkerboard_guessing(board):
+    Args:
+    board_size (int): Size of the board.
+    ship_sizes (list): List of ship sizes to place.
+
+    Returns:
+    numpy.ndarray: Board with ship placements.
+    """
+    try:
+        # Create a new Gurobi model
+        m = gp.Model("battleship_placement")
+        m.setParam('OutputFlag', 0)  # Suppress output
+
+        # Decision variables for ship placement
+        x = m.addVars(board_size, board_size, len(ship_sizes), 2, vtype=GRB.BINARY, name="x")
+        board = m.addVars(board_size, board_size, vtype=GRB.BINARY, name="board")
+
+        # Constraint: Each ship must be placed exactly once
+        for k in range(len(ship_sizes)):
+            m.addConstr(x.sum('*', '*', k, '*') == 1)
+
+        # Constraint: Map ship placement to board cells
+        for i in range(board_size):
+            for j in range(board_size):
+                horizontal_placement = gp.quicksum(
+                    x[i, j_, k, 0] for k in range(len(ship_sizes))
+                    for j_ in range(max(0, j - ship_sizes[k] + 1), min(j + 1, board_size))
+                )
+                vertical_placement = gp.quicksum(
+                    x[i_, j, k, 1] for k in range(len(ship_sizes))
+                    for i_ in range(max(0, i - ship_sizes[k] + 1), min(i + 1, board_size))
+                )
+                m.addConstr(board[i, j] <= horizontal_placement + vertical_placement)
+                m.addConstr(board[i, j] >= (horizontal_placement + vertical_placement) )
+        # Random weights for introducing randomness
+        random_weights = np.random.uniform(0.5, 1.5, size=(board_size, board_size))
+
+         # Objective: Add randomness to the ship placement
+        objective = gp.quicksum(board[i, j] * random_weights[i, j] for i in range(board_size) for j in range(board_size))
+        m.setObjective(objective, GRB.MAXIMIZE)
+
+        # Solve the model
+        m.optimize()
+
+        # Convert result to numpy array
+        result_board = np.zeros((board_size, board_size), dtype=int)
+        for i in range(board_size):
+            for j in range(board_size):
+                result_board[i, j] = int(board[i, j].X)
+
+        return result_board
+
+    except gp.GurobiError as e:
+        print(f"Gurobi error: {e}")
+        return None
+
+def optimize_guessing_strategy(board, target_guesses=100):
+    """
+    Optimize guessing strategy to minimize deviation from target guesses.
+
+    Args:
+    board (numpy.ndarray): Board with ship placements.
+    target_guesses (int): Target number of guesses to find all ships.
+
+    Returns:
+    int: Total guesses made.
+    """
     board_size = board.shape[0]
-    guesses = 0
-    hits = 0
     total_ship_cells = np.sum(board)
-    
-    # Checkerboard pattern: Guess cells where (i + j) % 2 == 0
-    for i in range(board_size):
-        for j in range(board_size):
-            if (i + j) % 2 == 0:  # Black cells
-                guesses += 1
-                if board[i, j] == 1:  # Hit
-                    hits += 1
-                    if hits == total_ship_cells:
-                        return guesses
 
-    # After checkerboard cells, guess the remaining white cells
-    for i in range(board_size):
-        for j in range(board_size):
-            if (i + j) % 2 != 0:  # White cells
-                guesses += 1
-                if board[i, j] == 1:  # Hit
-                    hits += 1
-                    if hits == total_ship_cells:
-                        return guesses
-    return guesses
+    try:
+        # Create a new Gurobi model
+        m = gp.Model("battleship_guessing")
+        m.setParam('OutputFlag', 0)  # Suppress output
 
+        # Decision variables for guesses
+        guess = m.addVars(board_size, board_size, vtype=GRB.BINARY, name="guess")
+        epsilon = m.addVar(vtype=GRB.CONTINUOUS, name="epsilon")  # Deviation variable
+
+        # Ensure all ship cells are guessed
+        for i in range(board_size):
+            for j in range(board_size):
+                if board[i, j] == 1:
+                    m.addConstr(guess[i, j] == 1)
+
+        # Enforce checkerboard pattern: prioritize black cells
+        black_cell_guesses = gp.quicksum(
+            guess[i, j] for i in range(board_size) for j in range(board_size) if (i + j) % 2 == 0
+        )
+        m.addConstr(black_cell_guesses >= guess.sum() * 0.5)
+
+        # Minimize deviation from the target number of guesses
+        m.addConstr(epsilon >= target_guesses - guess.sum())
+        m.addConstr(epsilon >= guess.sum() - target_guesses)
+        m.setObjective(epsilon, GRB.MINIMIZE)
+
+        # Solve the model
+        m.optimize()
+
+        # Extract total guesses
+        total_guesses = int(sum(guess[i, j].X for i in range(board_size) for j in range(board_size)))
+
+        return total_guesses
+
+    except gp.GurobiError as e:
+        print(f"Gurobi error: {e}")
+        return None
+
+# Example usage
 board_size = 10
-ship_sizes = [5, 4, 3, 3, 2]  # Battleship sizes
+ship_sizes = [5, 4, 3, 3, 2]  # Sizes of ships
 
-# Random placement and checkerboard guessing
-random_ship_placement = generate_random_ship_placement(board_size, ship_sizes)
-total_guesses = checkerboard_guessing(random_ship_placement)
+# Step 1: Generate ship placement
+ship_placement = generate_ship_placement_gurobi(board_size, ship_sizes)
 
-# Show results
-print("Random Ship Placement:")
-print(random_ship_placement)
-print(f"Total Guesses Required: {total_guesses}")
+if ship_placement is not None:
+    # Step 2: Optimize guessing strategy
+    guesses = optimize_guessing_strategy(ship_placement, target_guesses=100)
+
+    print("Ship Placement:")
+    print(ship_placement)
+    print(f"Total Guesses Made: {guesses}")
+else:
+    print("Failed to generate ship placement.")
